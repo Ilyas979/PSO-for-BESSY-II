@@ -18,8 +18,8 @@ class PSO:
         particle_output = False, iteration_out = False, init_pos = 'lhs', info = False):
         self.func = getattr(functions, func_name)
         self.lb = lb
-        self.ub = ub        
-        self.bait = bait        
+        self.ub = ub
+        self.bait = bait
         self.vel = vel
         self.ieqcons = ieqcons
         self.f_ieqcons = f_ieqcons
@@ -42,7 +42,7 @@ class PSO:
         self.info = info
 
     @classmethod
-    def extractall(cls):        
+    def extractall(cls):
         print  {key:value for key, value in cls.__dict__.items() if not key.startswith('__') and not callable(key)}
 
     def lhs(self):
@@ -96,22 +96,28 @@ class PSO:
             if y[mu_id[v]] > ub[mu_id[v]]:
                 y[mu_id[v]] = ub[mu_id[v]]
         return np.array(y)
-   
-    def continue_unfinished_pso(self, iteration_out_csv = 'iteration_out.csv', it_info = 'it_info.txt', more_iters = 100, continue_previous_iters = False, get_var_from_mat = True):
-        if get_var_from_mat: self.mat_to_class()
+
+    def continue_unfinished_pso(self, iteration_out_pk = 'iteration_out.pk', it_info = 'it_info.txt', more_iters = 100, continue_previous_iters = False, get_var_from = ''):
+        if get_var_from == 'mat':
+            self.mat_to_class()
+            if self.debug: print 'load data from mat'
+        elif get_var_from == 'pickle':
+            self.load_info_of_last_run_from_pickle()
+            if self.debug: print 'load data from pickle'
+        else:
+            if self.debug: print 'do not load data'
         it = self.maxiter
-        if (continue_previous_iters):        #"it" is an iter in which it stopped the last time
-            run_info = open(it_info, "r")
-            it_strs = run_info.read().split(' ')
+        '''if (continue_previous_iters):        #"it" is an iter in which it stopped the last time
+            with open(it_info, "r") as run_info:
+                it_strs = run_info.read().split(' ')
             it = int(it_strs[0])
-            run_info.close()
             if len(it_strs) == 1:
-                if self.info: print "The last run was successul. We are going to continue now"        
+                if self.info: print "The last run was successul. We are going to continue now"
             elif len(it_strs) == 2:           #These never happens now
                 if int(it_str[1]) == -1:
                     print ('PSO has finished the last time: Swarm best objective change was less than {:}'.format(self.minfunc) + ' it is better to start again with pso')
                     return np.inf, np.inf
-                    
+
                 elif int(it_strs[1]) == -2:
                     print ('PSO has finished the last time: Swarm best position change was less than {:}'.format(self.minstep) + ' it is better to start again with pso')
                     return np.inf, np.inf
@@ -124,8 +130,25 @@ class PSO:
             else:
                 print 'the last run was really bad'
                 return np.inf, np.inf
-        
-        df = pd.read_csv(iteration_out_csv)
+        '''
+        d_old = {}
+        d_new = {}
+        d_temp = {}
+        with open(iteration_out_pk, 'rb') as file_iter_out:
+            while True:
+                d_temp = copy.deepcopy(d_new)
+                try:
+                    #print "ok"
+                    d_new = pickle.load(file_iter_out)
+                except IndexError:
+                    break
+                except EOFError:
+                    break
+                d_old = copy.deepcopy(d_temp)
+
+        return d_old, d_new
+
+        '''df = pd.read_csv(iteration_out_csv)
         D = len(self.lb)
         x_cols = []
         for i in range(D):
@@ -140,40 +163,26 @@ class PSO:
 	            x2[i][j] -= x1[i][j]
 
         ###########
+'''
 
+        #self.bait = df[x_cols].iloc[self.swarmsize:].values.tolist()
+        #self.vel = x2
+        #self.maxiter = self.maxiter - it + more_iters
+        #xopt, fopt = self.pso()
+        #return xopt, fopt
 
-        self.bait = df[x_cols].iloc[self.swarmsize:].values.tolist()
-        self.vel = x2
-        self.maxiter = self.maxiter - it + more_iters
-        xopt, fopt = self.pso()
-        return xopt, fopt
-    
-    def save_info_of_last_run_to_txt(self): #one of the options for developers
-        with open("info_of_last_run.txt", "w+") as run_info:
-            run_info.write(self.func.__name__ + '\n')
-            run_info.write(','.join([str(i) for i in self.lb]) + '\n')
-            run_info.write(','.join([str(i) for i in self.ub]) + '\n')
-            run_info.write(','.join([str(i) for i in self.ieqcons]) + '\n')
-            run_info.write(str(self.f_ieqcons) + '\n')
-            run_info.write(str(self.swarmsize) + '\n')
-            run_info.write(str(self.omega) + '\n')
-            run_info.write(str(self.phip) + '\n')
-            run_info.write(str(self.phig) + '\n')
-            run_info.write(str(self.maxiter) + '\n')
-            run_info.write(str(self.minstep) + '\n')
-            run_info.write(str(self.minfunc) + '\n')
-            run_info.write(str(self.mu) + '\n')
-            run_info.write(str(self.alpha) + '\n')
-            run_info.write(str(self.debug) + '\n')
-            run_info.write(str(self.processes) + '\n')
-            run_info.write(str(self.particle_output) + '\n')
-            run_info.write(str(self.iteration_out) + '\n')
-            run_info.write(str(self.init_pos) + '\n')
-            run_info.write(str(self.info) + '\n')
-            #size_of_run_info = run_info.tell()
+    def save_info_of_last_run_to_pickle(self):
+        with open('info_of_last_run.pk', 'wb') as f:
+            pickle.dump(self.__dict__, f)
 
+    def load_info_of_last_run_from_pickle(self):
+        with open('info_of_last_run.pk', 'rb') as f:
+            self.__dict__ = pickle.load(f)
+
+    #For .mat handling
     def get_dict_from_class(self):
         d = copy.deepcopy(self.__dict__)
+        #this is for .mat handling
         d["func"] = self.func.__name__
         for key in d:
             if d[key] is None:
@@ -181,7 +190,7 @@ class PSO:
         return d
 
     def save_info_of_last_run_to_mat(self):
-        import scipy.io as sio        
+        import scipy.io as sio
         sio.savemat('info_of_last_run.mat', self.get_dict_from_class(), oned_as='row')
 
     def load_mat_to_dict(self):
@@ -205,15 +214,26 @@ class PSO:
                 elif (key == 'kwargs'):
                     new_d[key] = {}
                 else:
-                    print ".mat data is incorreect" 
+                    print ".mat data is incorreect"
                 if (key == 'args'):
                     new_d[key] = ()
                 if (key == 'func' and isinstance(value[0], unicode)):
                     new_d[key] = getattr(functions, value[0])
         return new_d
 
-    def mat_to_class(self):
-        self.__dict__ = self.load_mat_to_dict()        
+    def load_info_of_last_run_from_mat(self):
+        self.__dict__ = self.load_mat_to_dict()
+
+
+    def get_dict_of_particles_pos(self, fx, fp, x, p):
+        d = OrderedDict()
+        d['f(x)'] = fx
+        d['f(PBx)'] = fp
+        for i in range(len(self.lb)):
+            d['x_' + str(i)] = x[:, i] #here i is referred to ith coordinate and x[:, i] is x_i coordinates of S particles
+        for i in range(len(self.lb)):
+            d['PBx_' + str(i)] = p[:, i]
+        return d
 
     def pso(self):
         """
@@ -230,8 +250,8 @@ class PSO:
         bait: should be a list(consisting of list),to speed up the convergency if some good settings already exisiting
         processes: for multiprocesses
         """
-        
-      
+
+
         assert len(self.lb)==len(self.ub), 'Lower- and upper-bounds must be the same length'
         assert hasattr(self.func, '__call__'), 'Invalid function handle'
         self.lb = np.array(self.lb)
@@ -241,11 +261,11 @@ class PSO:
 
         #Store the variables of the current run of the function in .txt or .mat file
 
-        
-        #self.save_info_of_last_run_to_txt()
-        
-        self.save_info_of_last_run_to_mat()
-        
+
+        #self.save_info_of_last_run_to_mat()
+
+        self.save_info_of_last_run_to_pickle()
+
 
         it_info = open("it_info.txt", "w+", buffering = 0)
 
@@ -253,7 +273,7 @@ class PSO:
         vlow = -vhigh
 
         # Initialize objective function
-        
+
         obj = partial(self._obj_wrapper, self.func, self.args, self.kwargs)
 
         # Check for constraint function(s) #########################################
@@ -334,23 +354,6 @@ class PSO:
             # give it a temporary "best" point since it's likely to change
             g = x[0, :].copy()
 
-
-
-        # regardless of the value of "iteration_out" will save at least 2 last iters ##################iteration_out######
-        d = OrderedDict()
-        d['f(x)'] = fx
-        d['f(PBx)'] = fp
-        for i in range(D):
-            d['x_' + str(i)] = x[:, i] #here i is referred to ith coordinate and x[:, i] is x_i coordinates of S particles
-        for i in range(D):
-            d['PBx_' + str(i)] = p[:, i]
-
-        d_old = copy.deepcopy(d)
-        df = pd.DataFrame(data = d, columns = d.keys())
-        df.to_csv('iteration_out.csv', header = True)
-
-
-
         # Initialize the particle's velocity
         v = vlow + np.random.rand(S, D)*(vhigh - vlow)
         v = 0.4*v
@@ -363,6 +366,20 @@ class PSO:
 
         # Iterate until termination criterion met ##################################
         it = 1
+
+        # regardless of the value of "iteration_out" will save at least 2 last iters ##################iteration_out######
+        d_old = self.get_dict_of_particles_pos(fx, fp, x, p)
+
+        #Writeing to csv seems better for me
+        #df = pd.DataFrame(data = d_old, columns = d_old.keys())
+        #df.to_csv('iteration_out.csv', header = True)
+
+        #But lets pickle
+        file_iter_out = open('iteration_out.pk', 'wb')
+        pickle.dump(d_old, file_iter_out)
+
+
+
 
         while it <= self.maxiter:
             #omega = 0.7298 -(0.7298-omega)/maxiter*it
@@ -429,14 +446,8 @@ class PSO:
             p[i_update, :] = x[i_update, :].copy()
             fp[i_update] = fx[i_update]
 
-            d = OrderedDict()
-            d['f(x)'] = fx
-            d['f(PBx)'] = fp
-            for i in range(D):
-                d['x_' + str(i)] = x[:, i]
-            for i in range(D):
-                d['PBx_' + str(i)] = p[:, i]
-
+            d = self.get_dict_of_particles_pos(fx, fp, x, p)
+            #CSV option
             '''
             if (self.iteration_out):
                 df = pd.DataFrame(data = d, columns = d.keys())
@@ -450,19 +461,11 @@ class PSO:
             '''
             #Pickle
             if (self.iteration_out):
-                f = open('iteration_out.pk', 'wb') #check what is wb
-                pickle.dump(d, f)
-                f.close()
+                pickle.dump(d, file_iter_out)
             else:
-                while 1:
-                    try:
-                        pickle.load(f)
-                    except EOFError:
-                        break
-                f = open('iteration_out.pk', 'wb') #check what is wb
-                pickle.dump(d_old, f)
-                pickle.dump(d, f)
-                f.close()              
+                file_iter_out.seek(0)
+                pickle.dump(d_old, file_iter_out)
+                pickle.dump(d, file_iter_out)
                 d_old = copy.deepcopy(d)
 
 
@@ -479,8 +482,8 @@ class PSO:
                 if np.abs(fg - fp[i_min]) <= self.minfunc:
                     if (self.info == True): print('Stopping search: Swarm best objective change less than {:}'.format(self.minfunc))
                     #it_info.seek(0)
-                    #it_info.write('-1')                
-                    #it_info.close()              
+                    #it_info.write('-1')
+                    #it_info.close()
                     if self.particle_output:
                         return p_min, fp[i_min], p, fp
                     else:
@@ -488,7 +491,7 @@ class PSO:
                 elif stepsize <= self.minstep:
                     if (self.info == True): print('Stopping search: Swarm best position change less than {:}'.format(self.minstep))
                     #it_info.seek(0)
-                    #it_info.write('-2')                
+                    #it_info.write('-2')
                     #it_info.close()
                     if self.particle_output:
                         return p_min, fp[i_min], p, fp
@@ -500,13 +503,14 @@ class PSO:
 
             if self.debug:
                 print 'Best after iteration {:}: {:} {:}'.format(it, g, fg)
-            
+
             it_info.seek(0)
             it_info.write(str(it)) #update
             it += 1
 
 
         it_info.close()
+        file_iter_out.close()
 
         if (self.info == True):
             print('Stopping search: maximum iterations reached --> {:}'.format(self.maxiter))
