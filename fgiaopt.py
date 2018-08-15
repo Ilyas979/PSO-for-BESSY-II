@@ -8,6 +8,8 @@ from __future__ import division
 from functools import partial
 import numpy as np
 import random
+import sys
+import copy
 
 def testFunction(X):
     #:::: ZDT1 ::::#
@@ -48,24 +50,28 @@ def Dominates(X,Y):
     if all(X<=Y) and any(X<Y):
         b = True
     return b
-def Mutate(x,pm,mu,lb,ub):
+def Mutate(x, pm, mu, lb, ub):
     x = list(x)
     nVar = len(x)
     nMu = np.ceil(mu*nVar)
-    j = random.sample(range(nVar),int(nMu))
-
-    sigma =  pm * (ub - lb)
-    if len(sigma)>1:
+    j = random.sample(range(nVar), int(nMu))
+   # print 'pm: ', pm                       
+    sigma =  pm * (ub - lb)         
+   # print 'sigma1: ', sigma
+    if len(sigma)>1:                #can make it shorter and more intuitive
         sigma = [sigma[i] for i in j]
-    y = x
-    rerror= np.random.rand(len(j))*sigma
+   # print 'sigma2: ', sigma
+    y = copy.deepcopy(x)
+    rerror = np.random.rand(len(j))*sigma
     for v in range(int(nMu)):
-        y[j[v]]=x[j[v]]+rerror[v]
-#        print y[v]
+        y[j[v]] = x[j[v]]+rerror[v]
+     #   if y[j[v]] != x[j[v]]: print 'not eq'
+
         if y[j[v]] < lb[j[v]]:
-            y[j[v]]=lb[j[v]]
+            y[j[v]] = lb[j[v]]
         if y[j[v]] > ub[j[v]]:
             y[j[v]] = ub[j[v]]
+    
     return np.array(y)
 
 
@@ -102,10 +108,9 @@ def nondomSolutions2(X, F):
 def nondomSolutions(X, F):
     X = np.array(X)
     F = np.array(F)##this will be removed when we wrap it in class
-    nSolutions = len(F[:,0]) #Number of particles
+    nSolutions = len(F[:,0]) #Number of solutions
     index = []
     for i in range(0, nSolutions):
-        #print 'i: ', i
         nD = 0
         for j in range(0, nSolutions):
             if (all(F[j,:] <= F[i,:]) and any(F[j,:] < F[i,:]) and i != j): #J dominates I
@@ -116,7 +121,6 @@ def nondomSolutions(X, F):
     repX = X[index,:]
     repF = F[index,:]
     repX, idx = np.unique(repX, axis = 0, return_index = True)
-    #print 'repF: ', repF, 'idx: ', idx, 'index: ', index
     repF = repF[idx,:]
     return repX, repF
 
@@ -251,6 +255,12 @@ def mopsocd(func,lb,ub,Nobj,swarmsize=200, debug = False, maxit=60,nRep=100,w=0.
 
     it=0
     while it < maxit:
+        ### This is to see how much time is left
+        if debug == False:
+            pass
+           # print "iters done {0}\r".format(it),
+           # sys.stdout.flush()
+        ###
         it = it + 1
         h = SelectLeader(archiveX,archiveF)
         w = wdamp-(wdamp-w)/maxit*it #???
@@ -280,8 +290,11 @@ def mopsocd(func,lb,ub,Nobj,swarmsize=200, debug = False, maxit=60,nRep=100,w=0.
 
 
 
-        # prepare for mutation
-        pm=(1-(it-1)/maxit)**(1/mu)
+        ############## Mutation
+        #prepare for mutation
+        pm = (1-(it-1)/maxit)**(1/mu)
+        #pm = 0.3
+       
         NewX = X.copy()
         NewF = F.copy()
 
@@ -298,19 +311,25 @@ def mopsocd(func,lb,ub,Nobj,swarmsize=200, debug = False, maxit=60,nRep=100,w=0.
                 NewF[mutindices,:]= np.array(mp_pool.map(costFunction, NewX[mutindices,:]))
                 if debug: print 'multi process works for mutation'
         else:
-            for i in mutindices:
-                NewF[i]= costFunction(NewX[i, :])
+            for i in mutindices:    
+                NewF[i]= costFunction(NewX[i, :])                             
 
+        ##############End of mutiation
 
         for i in xrange(0, swarmsize):
             if Dominates(NewF[i,:],F[i,:]):
                 X[i,:] = NewX[i,:].copy()
                 F[i,:] = NewF[i,:].copy()
+                print 'NewF dominates F' 
             elif Dominates(F[i,:],NewF[i,:]):
+                print 'F dominates NewF'                
                 pass
-            elif np.random.rand() < 0.5:
-                X[i,:] = NewX[i,:].copy()
+            elif np.random.rand() < 0.5: #random.randint(0,1) == 0 can make like this also
+                X[i,:] = NewX[i,:].copy() 
                 F[i,:] = NewF[i,:].copy()
+                print 'Nothing dominates1'
+            else:
+                print 'Nothing dominates2'
 
             if Dominates(F[i,:],PFbest[i,:]):
                 PFbest[i,:] = F[i,:].copy()
@@ -321,20 +340,20 @@ def mopsocd(func,lb,ub,Nobj,swarmsize=200, debug = False, maxit=60,nRep=100,w=0.
                 PFbest[i,:] = F[i,:].copy()
                 PXbest[i,:] = X[i,:].copy()
 
-        archiveX = np.concatenate((archiveX,X),axis = 0)
-        archiveF = np.concatenate((archiveF,F),axis = 0)
-        archiveX,archiveF = nondomSolutions(archiveX,archiveF)
+        archiveX = np.concatenate((archiveX,X), axis = 0)
+        archiveF = np.concatenate((archiveF,F), axis = 0)
+        archiveX, archiveF = nondomSolutions(archiveX,archiveF) 
 
         if len(archiveX)>2:
-            archiveX,archiveF=crowding_sorting(archiveX,archiveF)
+            archiveX,archiveF = crowding_sorting(archiveX,archiveF)
 
         if len(archiveX)>nRep:
-            archiveX,archiveF=removeparticles(archiveX,archiveF,len(archiveX)-nRep)
-            if debug: print len(archiveX)-nRep,'particles removed'
+            archiveX,archiveF=removeparticles(archiveX, archiveF, len(archiveX) - nRep)
+            if debug: print len(archiveX) - nRep, 'particles removed'
 
         if debug: print 'the',it,'th iteration finished'
 
-
         np.savetxt('archiveF.txt',archiveF)
         np.savetxt('archiveX.txt',archiveX)
+    if debug == False: print
     return archiveX,archiveF
