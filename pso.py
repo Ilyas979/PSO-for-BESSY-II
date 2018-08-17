@@ -247,7 +247,6 @@ class PSO:
 
         obj = partial(self._obj_wrapper, self.func, self.args, self.kwargs)
 
-
         # Check for constraint function(s) #########################################
 
         if self.f_ieqcons is None:
@@ -285,8 +284,6 @@ class PSO:
             import multiprocessing
 
             mp_pool = multiprocessing.Pool(self.processes)
-
-
 
         # Initialize the particle swarm ############################################
 
