@@ -1,67 +1,79 @@
+"""
+Created on August 2018
+
+@author: I.Fatkhullin, J.Li HZB
+"""
+
 from __future__ import division
 from functools import partial
 import numpy as np
-import time,sys,os,time
-import scipy.stats,random
+import time, sys, os, time
+import scipy.stats, random
 import scipy.io as sio
 import pandas as pd
 from collections import OrderedDict
-#from pyDOE import *
 import copy
 from myfunc import functions
 import pickle
-
+#for animation
+#import matplotlib.pyplot as plt
+#from matplotlib.animation import FuncAnimation
+#
 class PSO:
-    def __init__(self, func_name, lb, ub, bait = [], vel = [], ieqcons = [], f_ieqcons = None, args = (), kwargs={},
-        swarmsize = 100, omega = 0.4, phip = 0.5, phig = 0.5, maxiter = 100,
-        minstep = 1e-8, minfunc = 1e-8, mu = 0.0, alpha = 2, debug = False, processes = 1,
-        particle_output = False, iteration_out = False, init_pos = 'lhs', info = False):
+
+    def __init__(self, func_name, lb, ub, Nobj = 1, nRep = 100, bait = np.array([]), w = [0.72984, 0.4], ieqcons = [], f_ieqcons = None, args = (), kwargs={},
+        swarmsize = 100, phip=1.49618, phig=1.49618, maxiter = 100,
+        minstep = 1e-8, minfunc = 1e-8, mu = 0.0, debug = False, processes = 1,
+        particle_output = False, iteration_out = False, init_dist = 'lhs', omega_strategy = 'constant', info = False, continue_flag = False):
         self.func = getattr(functions, func_name)
-        self.lb = lb
-        self.ub = ub        
-        self.bait = bait        
-        self.vel = vel
+        self.lb = np.array(lb)
+        self.ub = np.array(ub)
+        self.Nobj = Nobj
+        self.nRep = nRep
+        self.bait = bait
         self.ieqcons = ieqcons
         self.f_ieqcons = f_ieqcons
         self.args = args
         self.kwargs = kwargs
         self.swarmsize = swarmsize
-        self.omega = omega
-        self.phip =  phip
-        self.phig =  phig
-        self.maxiter = maxiter
-        self.minstep = minstep
-        self.minfunc = minfunc
+        self.omega_strategy = omega_strategy
+        self.omega = w[0] #w - current inertia factor
+        #Recommended value for SOPSO is omega=0.72984
+        self.w = w #initial and final inertia factors
+        self.phip =  phip #c1
+        self.phig =  phig #c2
+        self.maxiter = maxiter #maxit
+        self.minstep = minstep #now is used only for sopso
+        self.minfunc = minfunc #now is used only for sopso
         self.mu = mu
-        self.alpha = alpha
         self.debug = debug
         self.processes = processes
         self.particle_output = particle_output
         self.iteration_out = iteration_out
-        self.init_pos = init_pos
+        self.init_dist = init_dist
         self.info = info
-
-    @classmethod
-    def extractall(cls):        
-        print  {key:value for key, value in cls.__dict__.items() if not key.startswith('__') and not callable(key)}
-
+        self.x = np.random.rand(swarmsize, len(lb)) #particle positions
+        self.v = np.zeros_like(self.x)  # particle velocities
+        self.p = np.zeros_like(self.x)
+        self.fx = np.zeros((swarmsize, Nobj)) # current particle function values
+        self.fs = np.zeros(swarmsize, dtype=bool)  # feasibility of each particle
+        self.fp = np.ones((swarmsize, Nobj))*np.inf  # best particle function values
+        self.g = []  # best swarm position
+        self.fg = np.inf  # best swarm position starting value
+        self.it = 0
+        self.continue_flag = continue_flag
+        self.dim = len(lb)
     def lhs(self):
         samples = self.swarmsize
-        N = len(self.lb)
         rng = np.random
-
         segsize = 1.0 / samples
-
-        rdrange = rng.rand(samples, N) * segsize
+        rdrange = rng.rand(samples, self.dim) * segsize
         rdrange += np.atleast_2d(np.linspace(0.0, 1.0,samples, endpoint = False)).T
-
         x = np.zeros_like(rdrange)
-
-        for j in range(N):
+        for j in range(self.dim):
             order = rng.permutation(range(samples))
             x[:,j] = rdrange[order,j]
         return x
-
 
     def _obj_wrapper(self, func, args, kwargs, x):
         return func(x, *args, **kwargs)
@@ -80,185 +92,270 @@ class PSO:
 
     def Mutate(self, x, pm, mu, lb, ub):
         x = list(x)
-        nVar = len(x)
-        nMu = np.ceil(mu*nVar)
-        mu_id = random.sample(range(nVar),int(nMu))
+        mu_idx = np.random.randint(len(x))
+        dx =  pm * (ub[mu_idx] - lb[mu_idx])
+        x1 = x[mu_idx] - dx
+        x2 = x[mu_idx] + dx
+        if x1 < lb[mu_idx]:
+            x1 = lb[mu_idx]
+        if x2 > ub[mu_idx]:
+            x2 = ub[mu_idx]
+        x[mu_idx] = x1 + (x2 - x1)*np.random.random()
+        return np.array(x)
 
-        sigma =  pm * (ub - lb)
-        if len(sigma)>1:
-            sigma = [sigma[i] for i in mu_id]
-        y = x[:]
-        rerror= np.random.rand(len(mu_id))*sigma
-        for v in range(int(nMu)):
-            y[mu_id[v]]=x[mu_id[v]]+rerror[v]
-            if y[mu_id[v]] < lb[mu_id[v]]:
-                y[mu_id[v]]=lb[mu_id[v]]
-            if y[mu_id[v]] > ub[mu_id[v]]:
-                y[mu_id[v]] = ub[mu_id[v]]
-        return np.array(y)
-   
-    def continue_unfinished_pso(self, iteration_out_csv = 'iteration_out.csv', it_info = 'it_info.txt', more_iters = 100, continue_previous_iters = False, get_var_from_mat = True):
-        if get_var_from_mat: self.mat_to_class()
-        it = self.maxiter
-        if (continue_previous_iters):        #"it" is an iter in which it stopped the last time
-            run_info = open(it_info, "r")
-            it_strs = run_info.read().split(' ')
-            it = int(it_strs[0])
-            run_info.close()
-            if len(it_strs) == 1:
-                if self.info: print "The last run was successul. We are going to continue now"        
-            elif len(it_strs) == 2:           #These never happens now
-                if int(it_str[1]) == -1:
-                    print ('PSO has finished the last time: Swarm best objective change was less than {:}'.format(self.minfunc) + ' it is better to start again with pso')
-                    return np.inf, np.inf
-                    
-                elif int(it_strs[1]) == -2:
-                    print ('PSO has finished the last time: Swarm best position change was less than {:}'.format(self.minstep) + ' it is better to start again with pso')
-                    return np.inf, np.inf
-                elif int(it_strs[1]) < -2 or int(it_str[1]) == 0:
-                    print 'Something was wrong in recording data the last time'
-                    return np.inf, np.inf
-                else:
-                    print 'Something was wrong in recording data the last time'
-                    return np.inf, np.inf
-            else:
-                print 'the last run was really bad'
-                return np.inf, np.inf
-        
-        df = pd.read_csv(iteration_out_csv)
-        D = len(self.lb)
-        x_cols = []
-        for i in range(D):
-            x_cols.append('x_' + str(i))
+    def Dominates(self, X, Y):
+        b = False
+        if all(X<=Y) and any(X<Y):
+            b = True
+        return b
 
-        #initial velocities
-        ###########
-        x1 = df[x_cols].iloc[:self.swarmsize].values.tolist()
-        x2 = df[x_cols].iloc[self.swarmsize:].values.tolist()
-        for i in range(len(x2)):
-            for j in range(len(x2[0])):
-	            x2[i][j] -= x1[i][j]
+    def nondomSolutions(self, X, F):
+        X = np.array(X)
+        F = np.array(F)##this will be removed when we wrap it in class
+        nSolutions = len(F[:,0]) #Number of solutions
+        index = []
+        for i in range(0, nSolutions):
+            nD = 0
+            for j in range(0, nSolutions):
+                if (all(F[j,:] <= F[i,:]) and any(F[j,:] < F[i,:]) and i != j): #J dominates I
+                    nD = 1 #that means ith solution is bad, beacuse there is a better one - jth
+                    break
+            if nD == 0:
+                index.append(i)
+        repX = X[index,:]
+        repF = F[index,:]
+        repX, idx = np.unique(repX, axis = 0, return_index = True)
+        repF = repF[idx,:]
+        return repX, repF
 
-        ###########
+    def inverse_permutation_crowding(self, p):
+        #This function computes an "inverse permutation"
+        return np.array([p.index(l) for l in range(len(p))])
 
+    def crowding_sorting(self, archiveX, archiveF):
+        nondomN = len(archiveF)
+        crowdDist = np.zeros((nondomN, ))
+        for i in range(self.Nobj):
+            indexes = np.argsort(archiveF[:,i])
+            archivetestF = archiveF[indexes, i]
+            crowdDist = crowdDist[indexes] #(*)
+            for j in range(1, nondomN-1):
+                crowdDist[j] = crowdDist[j] + (archivetestF[j+1]-archivetestF[j-1])/(archivetestF[-1]-archivetestF[0])
+            crowdDist[0] = np.inf
+            crowdDist[-1] = np.inf
+            #at the end of each loop apply an inverse permutation to crowdDist,
+            #because here (*) we should apply a permutation to initailly ordered array
+            invert_indexes = self.inverse_permutation_crowding(list(indexes))
+            crowdDist = crowdDist[invert_indexes]
 
-        self.bait = df[x_cols].iloc[self.swarmsize:].values.tolist()
-        self.vel = x2
-        self.maxiter = self.maxiter - it + more_iters
-        xopt, fopt = self.pso()
-        return xopt, fopt
-    
-    def save_info_of_last_run_to_txt(self): #one of the options for developers
-        with open("info_of_last_run.txt", "w+") as run_info:
-            run_info.write(self.func.__name__ + '\n')
-            run_info.write(','.join([str(i) for i in self.lb]) + '\n')
-            run_info.write(','.join([str(i) for i in self.ub]) + '\n')
-            run_info.write(','.join([str(i) for i in self.ieqcons]) + '\n')
-            run_info.write(str(self.f_ieqcons) + '\n')
-            run_info.write(str(self.swarmsize) + '\n')
-            run_info.write(str(self.omega) + '\n')
-            run_info.write(str(self.phip) + '\n')
-            run_info.write(str(self.phig) + '\n')
-            run_info.write(str(self.maxiter) + '\n')
-            run_info.write(str(self.minstep) + '\n')
-            run_info.write(str(self.minfunc) + '\n')
-            run_info.write(str(self.mu) + '\n')
-            run_info.write(str(self.alpha) + '\n')
-            run_info.write(str(self.debug) + '\n')
-            run_info.write(str(self.processes) + '\n')
-            run_info.write(str(self.particle_output) + '\n')
-            run_info.write(str(self.iteration_out) + '\n')
-            run_info.write(str(self.init_pos) + '\n')
-            run_info.write(str(self.info) + '\n')
-            #size_of_run_info = run_info.tell()
+        indx = np.argsort(crowdDist)[::-1]
+        archiveX = archiveX[indx]
+        archiveF = archiveF[indx]
+        return archiveX, archiveF
 
-    def get_dict_from_class(self):
-        d = copy.deepcopy(self.__dict__)
-        d["func"] = self.func.__name__
-        for key in d:
-            if d[key] is None:
-                d[key] = "None"
-        return d
+    def removeparticles(self, archiveX,archiveF,N):
+    	for i in range(int(N)):
+    		archiveX=np.delete(archiveX,-1,axis=0)
+    		archiveF=np.delete(archiveF,-1,axis=0)
+    	return archiveX,archiveF
 
-    def save_info_of_last_run_to_mat(self):
-        import scipy.io as sio        
-        sio.savemat('info_of_last_run.mat', self.get_dict_from_class(), oned_as='row')
+    def SelectLeader(self, archiveX, archiveF):
+    	Nx = np.floor(len(archiveX)*0.1)
+    	h = random.randint(0, Nx)
+    	return h
 
-    def load_mat_to_dict(self):
-        import scipy.io as sio
-        d_load = sio.loadmat("info_of_last_run.mat")
-        new_d = {}
-        for key, value in d_load.items():
-            if not key.startswith('__') and not callable(key):
-                value = value.tolist()
-                if (len(value) == 0):
-                    new_d[key] = value
-                elif (len(value[0]) == 1 and (type(value[0][0]) == int or type(value[0][0]) == float)):
-                    new_d[key] = value[0][0]
-                elif (len(value[0]) > 1 and (type(value[0][0]) == int or type(value[0][0]) == float)):
-                    new_d[key] = value[0]
-                elif (isinstance(value[0], unicode)):
-                    if (value[0].encode('ascii') == 'None'):
-                        new_d[key] = None
-                    else:
-                        new_d[key] = value[0].encode('ascii')
-                elif (key == 'kwargs'):
-                    new_d[key] = {}
-                else:
-                    print ".mat data is incorreect" 
-                if (key == 'args'):
-                    new_d[key] = ()
-                if (key == 'func' and isinstance(value[0], unicode)):
-                    new_d[key] = getattr(functions, value[0])
-        return new_d
+    def weight_strategy(self):
+        if(self.omega_strategy == 'chaotic'):
+            #Chaotic_inertia_weight
+            z = random.random()
+            z = 4*z*(1-z)
+            return (self.w[0]-self.w[1])*float(self.maxiter - self.it)/float(self.maxiter) + self.w[1]*z
+        elif(self.omega_strategy == 'random'):
+            #Random_inertia_weight
+            return 0.5 + random.random()/2.0
+        elif(self.omega_strategy == 'linear'):
+            #Linear_inertia_weight
+            return float(self.w[0]) - (self.w[0]-self.w[1])/float(self.maxiter)*float(self.it)
+        elif(self.omega_strategy == 'constant'):
+            #Constant_inertia_weight
+            return self.w[0]
+        else:
+            print 'Specify omega_strategy correctly!'
+            return self.w[0]
 
-    def mat_to_class(self):
-        self.__dict__ = self.load_mat_to_dict()        
+    def mopsocd(self):
 
-    def pso(self):
-        """
-        lb: lower boundary of variables to be optimized
-        ub: upper boundary of variables to be optimized
-        swarmsize: the number of particles
-        maxit: maximum iterations
-        nRep: the number of particles saved in the repository
-        omega: final inetia factor
-        phip: cognitive facotr
-        phig: social learning factor
-        mu: 0<= mu <=1, mutation rate. [e1,e2,e3,e4,e5,e6] is the postion one particle, ceil(mu*6) of the 6 dimensions should mutate.
-        alpha: the coefficient to determin the mutation probability decaying with iterations, should be positve! Larger value makes the decaying faster.
-        bait: should be a list(consisting of list),to speed up the convergency if some good settings already exisiting
-        processes: for multiprocesses
-        """
-        
-      
         assert len(self.lb)==len(self.ub), 'Lower- and upper-bounds must be the same length'
         assert hasattr(self.func, '__call__'), 'Invalid function handle'
-        self.lb = np.array(self.lb)
-        self.ub = np.array(self.ub)
         assert np.all(self.ub > self.lb), 'All upper-bound values must be greater than lower-bound values'
 
+        ##################initialization
+        costFunction = partial(self._obj_wrapper, self.func, self.args, self.kwargs)
+        vmax = (self.ub-self.lb)
 
-        #Store the variables of the current run of the function in .txt or .mat file
+        # Initialize the multiprocessing module if necessary
+        if self.processes > 1:
+            import multiprocessing
+            mp_pool = multiprocessing.Pool(self.processes)
 
-        
-        #self.save_info_of_last_run_to_txt()
-        
-        self.save_info_of_last_run_to_mat()
-        
+        self.init_particle_swarm(costFunction, ())
+        if self.debug: print 'the 0th iteration finished'
 
-        it_info = open("it_info.txt", "w+", buffering = 0)
+        #########################initialization is finished
+        nondomX, nondomF = self.nondomSolutions(self.x, self.fx)
+        archiveX = nondomX.copy()
+        archiveF = nondomF.copy()
+        if len(nondomX)>2:
+            archiveX, archiveF = self.crowding_sorting(nondomX, nondomF)
 
-        vhigh = np.abs(self.ub - self.lb)
-        vlow = -vhigh
+        self.it = 0
+        while self.it < self.maxiter:
+
+            ### This is to see how much time is left (first part)
+            #print "iters done {0}\r".format(it),
+            #sys.stdout.flush()
+            ###
+            self.it = self.it + 1
+            h = self.SelectLeader(archiveX, archiveF)
+
+            self.omega = self.weight_strategy() #updates omega if it is not constant
+
+            for i in range(self.swarmsize):
+                # Update the particles velocities
+                self.v[i,:] = self.omega*self.v[i,:] + random.random()*self.phip*(self.p[i,:] - self.x[i,:]) + random.random()*self.phig*(archiveX[h,:] - self.x[i,:])
+                # Update the particles' positions
+                self.x[i,:] = self.x[i,:] + self.v[i,:]
+        		#:::: Check that the particles do not fly out of the search space ::::#
+                self.x[i,self.x[i,:] < self.lb] = self.lb[self.x[i,:] < self.lb]
+                self.x[i,self.x[i,:] > self.ub] = self.ub[self.x[i,:] > self.ub]
+        		#:::: Change the velocity direction ::::#
+                self.v[i,self.x[i,:] < self.lb] = -self.v[i,self.x[i,:] < self.lb]
+                self.v[i,self.x[i,:] > self.ub] = -self.v[i,self.x[i,:] > self.ub]
+        		#:::: Constrain the velocity ::::#
+                self.v[i, self.v[i,:] > vmax] = vmax[self.v[i,:] > vmax]
+                self.v[i, self.v[i,:] < -vmax] = vmax[self.v[i,:] < -vmax]
+
+            if self.processes > 1:
+                self.fx = np.array(mp_pool.map(costFunction, self.x))
+                if self.debug: print 'multi process works'
+            else:
+                for i in range(self.swarmsize):
+                    self.fx[i] = costFunction(self.x[i, :])
+
+            ############## Mutation
+            #prepare for mutation
+            if (self.mu == 0.0):
+                self.mu = 0.05
+                print 'In multiobjective optimization one needs mutation. Set mu = 0.05'
+
+            pm = (1-(float(self.it))/float(self.maxiter))**(1/self.mu)
+
+
+            NewX = self.x.copy()
+            NewF = self.fx.copy()
+
+            # create list of indices to be mutated
+            mutindices = []
+            for i in xrange(0, self.swarmsize):
+                if np.random.rand() < pm :
+                    mutindices.append(i)
+                    NewX[i,:] = self.Mutate(self.x[i,:], pm, self.mu, self.lb, self.ub)
+
+            # calculate cost function for mutated
+            if self.processes > 1:
+                if len(mutindices) > 0:
+                    NewF[mutindices,:]= np.array(mp_pool.map(costFunction, NewX[mutindices,:]))
+                    if self.debug: print 'multi process works for mutation'
+            else:
+                for i in mutindices:
+                    NewF[i] = costFunction(NewX[i, :])
+            ##############End of mutiation
+
+            for i in xrange(0, self.swarmsize):
+                if self.Dominates(NewF[i,:], self.fx[i,:]):
+                    self.x[i,:] = NewX[i,:].copy()
+                    self.fx[i,:] = NewF[i,:].copy()
+                elif self.Dominates(self.fx[i,:], NewF[i,:]):
+                    pass
+                elif random.randint(0,1) == 0:
+                    self.x[i,:] = NewX[i,:].copy()
+                    self.fx[i,:] = NewF[i,:].copy()
+                #Selecting (changing) personal best
+                if self.Dominates(self.fx[i,:], self.fp[i,:]):
+                    self.fp[i,:] = self.fx[i,:].copy()
+                    self.p[i,:] = self.x[i,:].copy()
+                elif self.Dominates(self.fp[i,:], self.fx[i,:]):
+                    pass
+                elif (random.randint(0,1) == 0):
+                    self.fp[i,:] = self.fx[i,:].copy()
+                    self.p[i,:] = self.x[i,:].copy()
+
+            archiveX = np.concatenate((archiveX,self.x), axis = 0)
+            archiveF = np.concatenate((archiveF,self.fx), axis = 0)
+            archiveX, archiveF = self.nondomSolutions(archiveX,archiveF)
+
+            if len(archiveX)>2:
+                archiveX, archiveF = self.crowding_sorting(archiveX,archiveF)
+
+            if len(archiveX) > self.nRep:
+                archiveX, archiveF = self.removeparticles(archiveX, archiveF, len(archiveX) - self.nRep)
+                if self.debug: print len(archiveX) - self.nRep, 'particles removed'
+
+            if self.debug: print 'the', self.it, 'th iteration finished'
+
+            np.savetxt('archiveF.txt', archiveF)
+            np.savetxt('archiveX.txt', archiveX)
+
+
+        ###This is to see how much time is left (second part)
+        #print
+        return archiveX, archiveF
+
+
+    def sopso(self):
+        """
+        func or costFunction: optimized function, might be SO or MO
+        lb: (list) lower boundary of variables to be optimized
+        ub: (list) upper boundary of variables to be optimized
+        swarmsize: the number of particles
+        maxiter: maximum iterations
+        nRep: the number of particles saved in the repository
+        omega: current inetia factor
+        w = [0.9, 0.4]: initial and final inertia factors
+        phip: cognitive facotor
+        phig: social learning factor
+        mu: 0 <= mu <= 1, mutation rate. [e1,e2,e3,e4,e5,e6] is the postion one particle, ceil(mu*6) of the 6 dimensions should mutate.
+        bait: to speed up the convergency if some good settings already exisiting, adds particles from bait to exisiting swarm
+        processes: for multiprocesses
+        """
+
+        if self.continue_flag:
+            with open('info_of_last_run.pk', 'rb') as file_info_of_last:
+                old_dic = pickle.load(file_info_of_last)
+            self.__dict__['x'] = old_dic['x']
+            self.__dict__['v'] = old_dic['v']
+            self.__dict__['p'] = old_dic['p']
+            self.__dict__['fx'] = old_dic['fx']
+            self.__dict__['fs'] = old_dic['fs']
+            self.__dict__['fp'] = old_dic['fp']
+            self.__dict__['g'] = old_dic['g']
+            self.__dict__['fg'] = old_dic['fg']
+            self.__dict__['swarmsize'] = old_dic['swarmsize']
+            self.__dict__['it'] = old_dic['it']
+            self.__dict__['omega'] = old_dic['omega']
+            if self.debug: print 'load data from pickle'
+            self.maxiter += self.it - 1
+
+        assert len(self.lb)==len(self.ub), 'Lower- and upper-bounds must be the same length'
+        assert hasattr(self.func, '__call__'), 'Invalid function handle'
+        assert np.all(self.ub > self.lb), 'All upper-bound values must be greater than lower-bound values'
 
         # Initialize objective function
-        
-        obj = partial(self._obj_wrapper, self.func, self.args, self.kwargs)
+        costFunction = partial(self._obj_wrapper, self.func, self.args, self.kwargs)
 
         # Check for constraint function(s) #########################################
         if self.f_ieqcons is None:
-            if not len(self.ieqcons):
+            if len(self.ieqcons) == 0:
                 if self.debug:
                     print('No constraints given.')
                 cons = self._cons_none_wrapper
@@ -277,243 +374,215 @@ class PSO:
             import multiprocessing
             mp_pool = multiprocessing.Pool(self.processes)
 
-        # Initialize the particle swarm ############################################
-        S = self.swarmsize
-        D = len(self.lb)  # the number of dimensions each particle has
-
-        ########### now have a choice for initial positions
-        if (self.init_pos == 'rand'):
-	        x = np.random.rand(S, D)  # particle positions
-        elif(self.init_pos == 'lhs'):
-            x = self.lhs()
-            #x = lhs(D, samples = S)
-
-        v = np.zeros_like(x)  # particle velocities
-        p = np.zeros_like(x)  # best particle positions
-        fx = np.zeros(S)  # current particle function values
-
-        fs = np.zeros(S, dtype=bool)  # feasibility of each particle
-        fp = np.ones(S)*np.inf  # best particle function values
-        g = []  # best swarm position
-        fg = np.inf  # best swarm position starting value
-
-        # Initialize the particle's position
-        x = self.lb + x*(self.ub - self.lb)
-	    #x = creat_iniswarm(lb,ub,S,D)
-        if (self.bait != []):
-            idxx = range(len(self.bait))
-            for idx, elem in zip(idxx, self.bait):
-                x[idx,:] = np.array(elem)
-	        if self.debug: print 'bait has been used!'
-
-        # Calculate objective and constraints for each particle
-        if self.processes > 1:
-            fx = np.array(mp_pool.map(obj, x))
-            fs = np.array(mp_pool.map(is_feasible, x))
+        ############ Initialize the particle swarm ############################################
+        if self.continue_flag == False:
+            self.init_particle_swarm(costFunction, is_feasible)
+            self.it = 1
         else:
-            for i in range(S):
-               # print 'the ',i,'th element in 0th iteration'
-                fx[i]= obj(x[i, :])
-                fs[i] = is_feasible(x[i, :])
+            self.use_bait()
+        ########### Initialization is finished#############
 
+        if self.iteration_out:
+            file_iter_out = open('iteration_out.pk', 'wb')
+            pickle.dump(self.__dict__, file_iter_out)
 
-        # Store particle's best position (if constraints are satisfied)
-        i_update = np.logical_and(fx < fp, fs)
-        p[i_update, :] = x[i_update, :].copy()
-        fp[i_update] = fx[i_update]
+        ############# Iterate until termination criterion met ##################################
+        while self.it <= self.maxiter:
+            ### This is to see how much time is left
+             #  print "iters done {0}\r".format(it),
+            #   sys.stdout.flush()
+            ###
 
+            try:
+                #Selection of inertia weight strategy
+                self.omega = self.weight_strategy()
 
-        # Update swarm's best position
-        i_min = np.argmin(fp)
-        if fp[i_min] < fg :
-            fg = fp[i_min]
-            g = p[i_min, :].copy()
+                rp = np.random.uniform(size=(self.swarmsize, self.dim))
+                rg = np.random.uniform(size=(self.swarmsize, self.dim))
+                # Update the particles velocities
+                self.v = self.omega*self.v + self.phip*rp*(self.p - self.x) + self.phig*rg*(self.g - self.x)
+                # Update the particles' positions
+                self.x = self.x + self.v
 
-        else:
-            # At the start, there may not be any feasible starting point, so just
-            # give it a temporary "best" point since it's likely to change
-            g = x[0, :].copy()
+                # Correct for bound violations
+                maskl = self.x < self.lb
+                masku = self.x > self.ub
+                self.x = self.x*(~np.logical_or(maskl, masku)) + self.lb*maskl + self.ub*masku
 
-
-
-        # regardless of the value of "iteration_out" will save at least 2 last iters ##################iteration_out######
-        d = OrderedDict()
-        d['f(x)'] = fx
-        d['f(PBx)'] = fp
-        for i in range(D):
-            d['x_' + str(i)] = x[:, i] #here i is referred to ith coordinate and x[:, i] is x_i coordinates of S particles
-        for i in range(D):
-            d['PBx_' + str(i)] = p[:, i]
-
-        d_old = copy.deepcopy(d)
-        df = pd.DataFrame(data = d, columns = d.keys())
-        df.to_csv('iteration_out.csv', header = True)
-
-
-
-        # Initialize the particle's velocity
-        v = vlow + np.random.rand(S, D)*(vhigh - vlow)
-        v = 0.4*v
-        #v = vlow + lhs(S,D)*(vhigh - vlow)
-        if (self.vel != []):
-            idxx = range(len(self.vel))
-            for idx, elem in zip(idxx, self.vel):
-                v[idx,:] = np.array(elem)
-            if self.debug: print 'vel has been used!'
-
-        # Iterate until termination criterion met ##################################
-        it = 1
-
-        while it <= self.maxiter:
-            #omega = 0.7298 -(0.7298-omega)/maxiter*it
-            rp = np.random.uniform(size=(S, D))
-            rg = np.random.uniform(size=(S, D))
-
-            # Update the particles velocities
-            v = self.omega*v + self.phip*rp*(p - x) + self.phig*rg*(g - x)
-            # Update the particles' positions
-            x = x + v
-            # Correct for bound violations
-            maskl = x < self.lb
-            masku = x > self.ub
-            x = x*(~np.logical_or(maskl, masku)) + self.lb*maskl + self.ub*masku
-
-
-            # Update objectives and constraints
-            if self.processes > 1:
-                fx = np.array(mp_pool.map(obj, x))
-                fs = np.array(mp_pool.map(is_feasible, x))
-            else:
-                for i in range(S):
-                    fx[i] = obj(x[i, :])
-                    fs[i] = is_feasible(x[i, :])
-            # Store particle's best position (if constraints are satisfied)
-
-
-
-
-           #####preparation for mutation####
-            if self.mu!=0:
-                print "doing mutations"
-                NewX = x.copy()
-                NewF = fx.copy()
-                NewFs = fs.copy()
-                pm = (1-(it-1)/self.maxiter)**(1/self.mu)
-                pm = np.exp(-self.alpha*it/self.maxiter)   #pm is the mutation probability, which decays with interations#
-                mutation_idx = []
-                for i in range(0, S):
-                    if np.random.rand()<pm:
-                        mutation_idx.append(i)
-                        NewX[i,:]= self.Mutate(x[i,:],pm,self.mu,self.lb,self.ub)
-
-                #print 'mutation idx',mutation_idx
-                if self.processes >1:
-                    if len(mutation_idx)>0:
-                        NewF[mutation_idx] = np.array(mp_pool.map(obj,NewX[mutation_idx,:]))
-                        NewFs[mutation_idx] = np.array(mp_pool.map(is_feasible, NewX[mutation_idx,:]))
+                # Update objectives and constraints
+                if self.processes > 1:
+                    self.fx[:,0] = np.array(mp_pool.map(costFunction, self.x))
+                    self.fs = np.array(mp_pool.map(is_feasible, self.x))
                 else:
-                    for i in mutation_idx:
-                        NewF[i] = obj(NewX[i,:])
-                        NewFs[i] = is_feasible(NewX[i,:])
+                    for i in range(self.swarmsize):
+                        self.fx[i, 0] = costFunction(self.x[i, :])
+                        self.fs[i] = is_feasible(self.x[i, :])
 
-                good_mutation = np.logical_and((NewF<fx),NewFs)
-                #print sum(good_mutation),'good mutation'
-                x[good_mutation,:] = NewX[good_mutation,:].copy()
-                fx[good_mutation] = NewF[good_mutation].copy()
-            ######## mutation  finished #############
+                #Update personal best
+                i_update = np.logical_and((self.fx[:,0] < self.fp[:,0]), self.fs)
+                self.p[i_update, :] = self.x[i_update, :].copy()
+                self.fp[i_update, 0] = self.fx[i_update,0]
 
+               #####preparation for mutation####
+                if self.mu != 0.0:
+                    NewX = self.x.copy()
+                    NewF = self.fx[:,0].copy()
+                    NewFs = self.fs.copy()
+                    pm = (1-(self.it-1)/float(self.maxiter))**(1/self.mu) #pm is the mutation probability, which decays with interations#
+                    mutation_idx = []
+                    for i in range(0, self.swarmsize):
+                        if np.random.rand() < pm:
+                            mutation_idx.append(i)
+                            NewX[i,:]= self.Mutate(self.x[i,:],pm,self.mu,self.lb,self.ub)
 
+                    if self.processes > 1:
+                        if len(mutation_idx)>0:
+                            NewF[mutation_idx] = np.array(mp_pool.map(costFunction,NewX[mutation_idx,:]))
+                            NewFs[mutation_idx] = np.array(mp_pool.map(is_feasible, NewX[mutation_idx,:]))
+                    else:
+                        for i in mutation_idx:
+                            NewF[i] = costFunction(NewX[i,:])
+                            NewFs[i] = is_feasible(NewX[i,:])
 
+                    #new strategy
+                    self.x = copy.deepcopy(NewX)
+                    self.fx[:,0] = copy.deepcopy(NewF)
+                ######## mutation is finished #############
 
-            i_update = np.logical_and((fx < fp), fs)
-            p[i_update, :] = x[i_update, :].copy()
-            fp[i_update] = fx[i_update]
+                #Update personal best
+                i_update = np.logical_and((self.fx[:,0] < self.fp[:,0]), self.fs)
+                self.p[i_update, :] = self.x[i_update, :].copy()
+                self.fp[i_update, 0] = self.fx[i_update,0]
 
-            d = OrderedDict()
-            d['f(x)'] = fx
-            d['f(PBx)'] = fp
-            for i in range(D):
-                d['x_' + str(i)] = x[:, i]
-            for i in range(D):
-                d['PBx_' + str(i)] = p[:, i]
+                #Compare swarm's best position with global best position
+                i_min = np.argmin(self.fp[:,0])
+                if self.fp[i_min,0] < self.fg :
+                    if self.debug:
+                        print('New best for swarm at iteration {:}: {:} {:}'\
+                            .format(self.it, self.p[i_min, :], self.fp[i_min,0]))
+                    p_min = self.p[i_min, :].copy()
+                    stepsize = np.sqrt(np.sum((self.g - p_min)**2))
+                    if np.abs(self.fg - self.fp[i_min,0]) <= self.minfunc:
+                        self.it += 1
+                        if (self.info == True): print('Stopping search: Swarm best objective change less than {:}'.format(self.minfunc))
+                        if self.particle_output:
+                            return p_min, self.fp[i_min,0], self.p, self.fp[:,0]
+                        else:
+                            return p_min, self.fp[i_min,0]
+                    elif stepsize <= self.minstep:
+                        self.it += 1
+                        if (self.info == True): print('Stopping search: Swarm best position change less than {:}'.format(self.minstep))
+                        if self.particle_output:
+                            return p_min, self.fp[i_min,0], self.p, self.fp[:,0]
+                        else:
+                            return p_min, self.fp[i_min,0]
+                    else:
+                        self.g = p_min.copy()
+                        self.fg = self.fp[i_min,0]
 
-            '''
-            if (self.iteration_out):
-                df = pd.DataFrame(data = d, columns = d.keys())
-                df.to_csv('iteration_out.csv', mode = 'a', header = False)
-            else:
-                df_old = pd.DataFrame(data = d_old, columns = d_old.keys())
-                df_old.to_csv('iteration_out.csv', mode = 'w', header = True)
-                df = pd.DataFrame(data = d, columns = d.keys())
-                df.to_csv('iteration_out.csv', mode = 'a', header = False)
-                d_old = copy.deepcopy(d)
-            '''
-            #Pickle
-            if (self.iteration_out):
-                f = open('iteration_out.pk', 'wb') #check what is wb
-                pickle.dump(d, f)
-                f.close()
-            else:
-                while 1:
-                    try:
-                        pickle.load(f)
-                    except EOFError:
-                        break
-                f = open('iteration_out.pk', 'wb') #check what is wb
-                pickle.dump(d_old, f)
-                pickle.dump(d, f)
-                f.close()              
-                d_old = copy.deepcopy(d)
-
-
-            # Compare swarm's best position with global best position
-            i_min = np.argmin(fp)
-            if fp[i_min] < fg :
                 if self.debug:
-                    print('New best for swarm at iteration {:}: {:} {:}'\
-                        .format(it, p[i_min, :], fp[i_min]))
+                    print 'Best after iteration {:}: {:} {:}'.format(self.it, self.g, self.fg)
 
-                p_min = p[i_min, :].copy()
-                stepsize = np.sqrt(np.sum((g - p_min)**2))
+                self.it += 1
 
-                if np.abs(fg - fp[i_min]) <= self.minfunc:
-                    if (self.info == True): print('Stopping search: Swarm best objective change less than {:}'.format(self.minfunc))
-                    #it_info.seek(0)
-                    #it_info.write('-1')                
-                    #it_info.close()              
-                    if self.particle_output:
-                        return p_min, fp[i_min], p, fp
-                    else:
-                        return p_min, fp[i_min]
-                elif stepsize <= self.minstep:
-                    if (self.info == True): print('Stopping search: Swarm best position change less than {:}'.format(self.minstep))
-                    #it_info.seek(0)
-                    #it_info.write('-2')                
-                    #it_info.close()
-                    if self.particle_output:
-                        return p_min, fp[i_min], p, fp
-                    else:
-                        return p_min, fp[i_min]
-                else:
-                    g = p_min.copy()
-                    fg = fp[i_min]
+            except KeyboardInterrupt or SystemError:
+                try:
+                    with open('info_of_last_run.pk', 'rb') as file_info_of_last:
+                        self.__dict__ = pickle.load(file_info_of_last)
+                    with open('info_of_last_run.pk', 'wb') as file_info_of_last:
+                        pickle.dump(self.__dict__, file_info_of_last)
+                except EOFError:
+                    pass
+                if self.iteration_out:
+                    file_iter_out.close()
+                raise #close the file and then raise  EOFerror
 
-            if self.debug:
-                print 'Best after iteration {:}: {:} {:}'.format(it, g, fg)
-            
-            it_info.seek(0)
-            it_info.write(str(it)) #update
-            it += 1
+            if (self.iteration_out):
+                pickle.dump(self.__dict__, file_iter_out)
+                file_iter_out.flush()
+
+            #Pickle all info about current iteration. This way is quite slow, but we can ignore it in comparision with time for function computing
+            with open('info_of_last_run.pk', 'wb') as file_info_of_last:
+                pickle.dump(self.__dict__, file_info_of_last)
 
 
-        it_info.close()
+        ###############################end of BIG while
+        ### This is to see how much time is left (second part)
+        #print
+        ###
 
+
+        if self.iteration_out:
+            file_iter_out.close()
         if (self.info == True):
             print('Stopping search: maximum iterations reached --> {:}'.format(self.maxiter))
-
-        if not is_feasible(g):
+        if not is_feasible(self.g):
             if (self.info == True): print("However, the optimization couldn't find a feasible design. Sorry")
         if self.particle_output:
-            return g, fg, p, fp
+            return self.g, self.fg, self.p, self.fp[:,0]
         else:
-	        return g, fg
+	        return self.g, self.fg
+
+    def init_particle_swarm(self, costFunction, is_feasible):
+        if (self.init_dist == 'rand'):
+	        self.x = np.random.rand(self.swarmsize, self.dim)  # particle positions
+        elif(self.init_dist == 'lhs'):
+            self.x = self.lhs()
+        # Initialize the particle's position
+        self.x = self.lb + self.x*(self.ub - self.lb)
+        self.use_bait()
+        # Calculate objective and constraints for each particle
+        if self.processes > 1:
+            if self.Nobj == 1:
+                self.fs = np.array(mp_pool.map(is_feasible, self.x))
+                self.fx[:,0] = np.array(mp_pool.map(costFunction, self.x))
+            else:
+                self.fx = np.array(mp_pool.map(costFunction, self.x))
+            if self.debug: print 'multiprocessing works'
+        else:
+            for i in range(self.swarmsize):
+                if self.Nobj == 1:
+                    self.fx[i,0] = costFunction(self.x[i, :])
+                    self.fs[i] = is_feasible(self.x[i, :])
+                else:
+                    self.fx[i] = costFunction(self.x[i, :])
+
+        if self.Nobj == 1:
+            # Store particle's best position (if constraints are satisfied)
+
+            i_update = np.logical_and(self.fx[:,0] < self.fp[:,0], self.fs)
+
+            self.p[i_update, :] = self.x[i_update, :].copy()
+            self.fp[i_update,0] = self.fx[i_update,0]
+            # Update swarm's best position
+            i_min = np.argmin(self.fp[:,0])
+            if self.fp[i_min,0] < self.fg :
+                self.fg = self.fp[i_min,0]
+                self.g = self.p[i_min, :].copy()
+            else:
+                # At the start, there may not be any feasible starting point, so just
+                # give it a temporary "best" point since it's likely to change
+                self.g = self.x[0, :].copy()
+        else:
+            #Initialize personal best by initial positions
+            self.p = self.x.copy()
+            self.fp[:,0] = self.fx[:,0].copy()
+
+        # Initialize the particle's velocity
+        vhigh = np.abs(self.ub - self.lb)
+        vlow = -vhigh
+        self.v = vlow + np.random.rand(self.swarmsize, self.dim)*(vhigh - vlow)
+
+    def use_bait(self):
+        if (self.bait != np.array([])):
+            assert self.dim == self.bait.shape[1]
+            self.swarmsize += len(self.bait)
+            self.x = np.append(self.x, self.bait, axis = 0)
+            self.v = np.append(self.v, np.random.rand(len(self.bait), self.dim), axis = 0)  # particle velocities
+            self.p = np.append(self.p, self.bait, axis = 0)
+            self.fx = np.append(self.fx, np.zeros((len(self.bait), self.Nobj)), axis = 0)  # current particle function values
+            if self.Nobj == 1:
+                self.fs = np.append(self.fs, np.zeros(len(self.bait), dtype=bool))  # feasibility of each particle
+            self.fp = np.append(self.fp, np.ones((len(self.bait), self.Nobj))*np.inf, axis = 0)
+
+            if self.debug: print 'bait has been used!'
